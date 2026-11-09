@@ -1,3 +1,4 @@
+//! `--delimited-continuations` opts into the experimental one-shot shift/reset API.
 //! A CLI implementation for `boa_engine` that comes complete with file execution and a REPL.
 #![doc = include_str!("../ABOUT.md")]
 #![doc(
@@ -97,6 +98,10 @@ struct Opt {
     /// Run in strict mode.
     #[arg(long)]
     strict: bool,
+
+    /// Enable experimental one-shot shift/reset functions.
+    #[arg(long)]
+    delimited_continuations: bool,
 
     /// Dump the AST to stdout with the given format.
     #[arg(
@@ -575,6 +580,12 @@ fn main() -> Result<()> {
         .can_block(!args.no_can_block)
         .build()
         .map_err(|e| eyre!(e.to_string()))?;
+
+    if args.delimited_continuations {
+        context
+            .enable_delimited_continuations()
+            .map_err(|e| eyre!(e.to_string()))?;
+    }
 
     // Strict mode
     context.strict(args.strict);

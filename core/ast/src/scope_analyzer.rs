@@ -3,6 +3,9 @@
 //! The scope analysis is done in two steps:
 //! 1. Collecting bindings: This step collects all the bindings in the AST and fills the scopes with them.
 //! 2. Analyzing binding escapes: This step analyzes if the bindings escape their function scopes.
+//!
+//! `analyze_shared_binding_escapes` conservatively shares bindings for the VM experiment;
+//! normal analysis leaves register-local allocation enabled.
 
 #[cfg(feature = "annex-b")]
 use crate::operations::annex_b_function_declarations_names;
@@ -76,6 +79,7 @@ where
     let mut visitor = BindingEscapeAnalyzer {
         scope,
         direct_eval: in_eval,
+        share_bindings: false,
         with: false,
         interner,
     };
@@ -86,9 +90,30 @@ where
     }
 }
 
+/// Experimental escape pass for scripts that will be captured by multi-shot tests.
+/// Reuses normal scope traversal and index ordering without introducing eval semantics.
+pub(crate) fn analyze_shared_binding_escapes(
+    node: &mut Script,
+    scope: Scope,
+    interner: &Interner,
+) -> Result<(), &'static str> {
+    let mut visitor = BindingEscapeAnalyzer {
+        scope,
+        direct_eval: false,
+        share_bindings: true,
+        with: false,
+        interner,
+    };
+    match visitor.visit(node) {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(reason) => Err(reason),
+    }
+}
+
 struct BindingEscapeAnalyzer<'interner> {
     scope: Scope,
     direct_eval: bool,
+    share_bindings: bool,
     with: bool,
     interner: &'interner Interner,
 }
@@ -99,7 +124,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
     fn visit_identifier_mut(&mut self, node: &'ast mut Identifier) -> ControlFlow<Self::BreakTy> {
         let name = node.to_js_string(self.interner);
         self.scope
-            .access_binding(&name, self.direct_eval || self.with);
+            .access_binding(&name, self.direct_eval || self.with || self.share_bindings);
         ControlFlow::Continue(())
     }
 
@@ -107,7 +132,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         let direct_eval_old = self.direct_eval;
         self.direct_eval = node.contains_direct_eval || self.direct_eval;
         if let Some(scope) = &mut node.scope {
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -127,7 +152,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         let direct_eval_old = self.direct_eval;
         self.direct_eval = node.contains_direct_eval || self.direct_eval;
         if let Some(scope) = &mut node.scope {
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -146,7 +171,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
     fn visit_with_mut(&mut self, node: &'ast mut With) -> ControlFlow<Self::BreakTy> {
         let with = self.with;
         self.with = true;
-        if self.direct_eval {
+        if self.direct_eval || self.share_bindings {
             node.scope.escape_all_bindings();
         }
         self.visit_expression_mut(&mut node.expression)?;
@@ -161,7 +186,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
     fn visit_catch_mut(&mut self, node: &'ast mut Catch) -> ControlFlow<Self::BreakTy> {
         let direct_eval_old = self.direct_eval;
         self.direct_eval = node.contains_direct_eval || self.direct_eval;
-        if self.direct_eval {
+        if self.direct_eval || self.share_bindings {
             node.scope.escape_all_bindings();
         }
         std::mem::swap(&mut self.scope, &mut node.scope);
@@ -179,7 +204,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         let direct_eval_old = self.direct_eval;
         self.direct_eval = node.inner.contains_direct_eval || self.direct_eval;
         if let Some(ForLoopInitializer::Lexical(decl)) = &mut node.inner.init {
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 decl.scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, &mut decl.scope);
@@ -206,7 +231,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         let direct_eval_old = self.direct_eval;
         if let Some(scope) = &mut node.target_scope {
             self.direct_eval = node.target_contains_direct_eval || self.direct_eval;
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -219,7 +244,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         }
         if let Some(scope) = &mut node.scope {
             self.direct_eval = node.contains_direct_eval || self.direct_eval;
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -238,7 +263,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         let direct_eval_old = self.direct_eval;
         if let Some(scope) = &mut node.iterable_scope {
             self.direct_eval = node.iterable_contains_direct_eval || self.direct_eval;
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -251,7 +276,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         }
         if let Some(scope) = &mut node.scope {
             self.direct_eval = node.contains_direct_eval || self.direct_eval;
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 scope.escape_all_bindings();
             }
             std::mem::swap(&mut self.scope, scope);
@@ -411,7 +436,7 @@ impl<'ast> VisitorMut<'ast> for BindingEscapeAnalyzer<'_> {
         node: &'ast mut ClassExpression,
     ) -> ControlFlow<Self::BreakTy> {
         if let Some(name_scope) = &mut node.name_scope {
-            if self.direct_eval {
+            if self.direct_eval || self.share_bindings {
                 name_scope.escape_all_bindings();
             }
             name_scope.escape_all_bindings();
@@ -549,7 +574,7 @@ impl BindingEscapeAnalyzer<'_> {
     ) -> ControlFlow<&'static str> {
         let direct_eval_old = self.direct_eval;
         self.direct_eval = contains_direct_eval || self.direct_eval;
-        if self.direct_eval {
+        if self.direct_eval || self.share_bindings {
             scopes.escape_all_bindings();
         }
         let mut scope = scopes.parameter_scope();

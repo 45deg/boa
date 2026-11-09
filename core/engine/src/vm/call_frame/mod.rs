@@ -1,6 +1,7 @@
 //! `CallFrame`
 //!
-//! This module will provides everything needed to implement the `CallFrame`
+//! `CallFrame` stores execution state; `CONTINUATION_SAFE_ENTRY` marks frames entered
+//! through an explicit bytecode call, excluding implicit/native capture boundaries.
 
 use super::ActiveRunnable;
 use crate::{
@@ -37,6 +38,9 @@ bitflags::bitflags! {
         /// This is a lightweight frame pushed for a native function call.
         /// It only exists to hold the function's realm on the frame stack.
         const NATIVE_FRAME = 0b0001_0000;
+
+        /// Entered through an explicit JS call or continuation dispatch.
+        const CONTINUATION_SAFE_ENTRY = 0b0010_0000;
     }
 }
 

@@ -3,6 +3,10 @@
 //! The Virtual Machine (VM) handles generating instructions, then executing them.
 //! This module will provide an instruction set for the AST to use, various traits,
 //! plus an interpreter to execute those instructions
+//!
+//! The test-only `continuation` module probes frame-segment capture and one-shot
+//! resumption independently of the opt-in JavaScript API in `delimited`.
+//! `delimited` dispatches real calls; `pop_frame` removes completed prompts.
 
 use crate::{
     Context, JsError, JsExpect, JsNativeError, JsObject, JsResult, JsString, JsValue, Module,
@@ -46,6 +50,7 @@ pub(crate) use code_block::GlobalFunctionBinding;
 mod call_frame;
 mod code_block;
 mod completion_record;
+pub(crate) mod delimited;
 mod inline_cache;
 mod runtime_limits;
 
@@ -58,6 +63,9 @@ pub mod flowgraph;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod continuation;
 
 /// Virtual Machine.
 #[derive(Debug)]
@@ -93,6 +101,9 @@ pub struct Vm {
     /// [`JsObject::call`](crate::object::JsObject::call) and
     /// [`JsObject::construct`](crate::object::JsObject::construct).
     pub(crate) host_call_depth: usize,
+
+    pub(crate) continuation_owner: Gc<()>,
+    pub(crate) prompts: Vec<delimited::Prompt>,
 
     pub(crate) shadow_stack: ShadowStack,
 
@@ -420,6 +431,8 @@ impl Vm {
             runtime_limits: RuntimeLimits::default(),
             native_active_function: None,
             host_call_depth: 0,
+            continuation_owner: Gc::new(()),
+            prompts: Vec::new(),
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
             trace: false,
@@ -634,6 +647,13 @@ impl Vm {
         // Don't pop the dummy frame (index 0).
         if self.frames.len() <= 1 {
             return None;
+        }
+        if self
+            .prompts
+            .last()
+            .is_some_and(|prompt| prompt.frame_index == self.frames.len() - 1)
+        {
+            self.prompts.pop();
         }
         self.shadow_stack.pop();
         self.frames.pop()

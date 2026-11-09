@@ -1,3 +1,6 @@
+//! Script/module scope analysis. Normal `analyze_scope` collects and resolves bindings;
+//! the experimental Script escape pass shares local storage before bytecode compilation.
+
 use std::ops::ControlFlow;
 
 use boa_interner::{Interner, Sym, ToIndentedString};
@@ -60,6 +63,26 @@ impl Script {
     ) -> Result<(), &'static str> {
         collect_bindings(self, self.strict(), false, scope, interner)?;
         analyze_binding_escapes(self, false, scope.clone(), interner)?;
+        optimize_scope_indices(self, scope);
+        Ok(())
+    }
+
+    /// Conservatively share local binding storage for continuation experiments.
+    ///
+    /// Call only on an already scope-analyzed script, before compiling any of its
+    /// functions. All local bindings (including const and parameters) are marked
+    /// escaping; no eval code or source-level closure is inserted. This is not a
+    /// Context-wide mode and does not affect separately parsed code.
+    ///
+    /// # Errors
+    /// Returns any binding analysis error.
+    #[doc(hidden)]
+    pub fn share_bindings_for_continuation_experiment(
+        &mut self,
+        scope: &Scope,
+        interner: &Interner,
+    ) -> Result<(), &'static str> {
+        crate::scope_analyzer::analyze_shared_binding_escapes(self, scope.clone(), interner)?;
         optimize_scope_indices(self, scope);
         Ok(())
     }

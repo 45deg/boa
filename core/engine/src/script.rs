@@ -1,5 +1,7 @@
 //! Boa's implementation of ECMAScript's Scripts.
 //!
+//! Test-only `share_bindings_for_continuation_experiment` adjusts AST storage before compilation.
+//!
 //! This module contains the [`Script`] type, which represents a [**Script Record**][script].
 //!
 //! More information:
@@ -113,6 +115,17 @@ impl Script {
                 path,
             }),
         })
+    }
+
+    /// Opt-in test hook; normal parsing and compilation never call this pass.
+    #[cfg(test)]
+    pub(crate) fn share_bindings_for_continuation_experiment(&self, context: &Context) {
+        let mut phase = self.inner.phase.borrow_mut();
+        let ScriptPhase::Ast(ast) = &mut *phase else {
+            panic!("shared bindings must be selected before compilation");
+        };
+        ast.share_bindings_for_continuation_experiment(self.realm().scope(), context.interner())
+            .expect("shared binding analysis");
     }
 
     /// Compiles the codeblock of this script.

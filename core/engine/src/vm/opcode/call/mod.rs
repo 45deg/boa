@@ -1,3 +1,7 @@
+//! Call opcodes prepare operands and dispatch ordinary calls through `delimited::call`.
+//! That shared path handles opt-in control functions by identity and marks safe
+//! ordinary frame entries. Eval/construct keep their existing boundary behavior.
+
 use std::{cell::RefCell, mem::MaybeUninit};
 
 use boa_string::JsString;
@@ -82,7 +86,7 @@ impl CallEval {
             return Ok(());
         }
 
-        object.__call__(argument_count.into()).resolve(context)?;
+        crate::vm::delimited::call(&object, argument_count.into(), context)?;
         Ok(())
     }
 }
@@ -163,7 +167,7 @@ impl CallEvalSpread {
             .stack
             .calling_convention_push_arguments(&arguments);
 
-        object.__call__(argument_count).resolve(context)?;
+        crate::vm::delimited::call(&object, argument_count, context)?;
         Ok(())
     }
 }
@@ -193,7 +197,7 @@ impl Call {
             return Err(Self::handle_not_callable());
         };
 
-        object.__call__(argument_count.into()).resolve(context)?;
+        crate::vm::delimited::call(&object, argument_count.into(), context)?;
 
         Ok(())
     }
@@ -247,7 +251,7 @@ impl CallSpread {
                 .into());
         };
 
-        object.__call__(argument_count).resolve(context)?;
+        crate::vm::delimited::call(&object, argument_count, context)?;
         Ok(())
     }
 }
