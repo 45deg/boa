@@ -1,6 +1,7 @@
 //! Boa's implementation of ECMAScript's Scripts.
 //!
-//! Test-only `share_bindings_for_continuation_experiment` adjusts AST storage before compilation.
+//! Multi-shot mode selects shared AST binding storage during parsing and records
+//! that provenance on compiled code. The separate test hook supports VM experiments.
 //!
 //! This module contains the [`Script`] type, which represents a [**Script Record**][script].
 //!
@@ -55,6 +56,7 @@ enum ScriptPhase {
 struct Inner {
     realm: Realm,
     phase: GcRefCell<ScriptPhase>,
+    shared_continuation_bindings: bool,
     source_text: SourceText,
     loaded_modules: GcRefCell<FxHashMap<JsString, Module>>,
     host_defined: HostDefined,
@@ -99,6 +101,11 @@ impl Script {
         }
         let scope = context.realm().scope().clone();
         let (mut code, source) = parser.parse_script_with_source(&scope, context.interner_mut())?;
+        let shared_continuation_bindings = context.vm.shared_continuation_bindings;
+        if shared_continuation_bindings {
+            code.share_bindings_for_continuations(&scope, context.interner())
+                .map_err(|reason| crate::JsNativeError::syntax().with_message(reason))?;
+        }
         if !context.optimizer_options().is_empty() {
             context.optimize_statement_list(code.statements_mut());
         }
@@ -109,6 +116,7 @@ impl Script {
             inner: Gc::new(Inner {
                 realm: realm.unwrap_or_else(|| context.realm().clone()),
                 phase: GcRefCell::new(ScriptPhase::Ast(code)),
+                shared_continuation_bindings,
                 source_text,
                 loaded_modules: GcRefCell::default(),
                 host_defined: HostDefined::default(),
@@ -124,7 +132,7 @@ impl Script {
         let ScriptPhase::Ast(ast) = &mut *phase else {
             panic!("shared bindings must be selected before compilation");
         };
-        ast.share_bindings_for_continuation_experiment(self.realm().scope(), context.interner())
+        ast.share_bindings_for_continuations(self.realm().scope(), context.interner())
             .expect("shared binding analysis");
     }
 
@@ -172,7 +180,11 @@ impl Script {
             compiler.global_declaration_instantiation(source);
             compiler.compile_statement_list(source.statements(), true, false);
 
-            Gc::new(compiler.finish())
+            let code = Gc::new(compiler.finish());
+            if self.inner.shared_continuation_bindings {
+                crate::vm::delimited::mark_shared_code(&code);
+            }
+            code
         };
 
         *self.inner.phase.borrow_mut() = ScriptPhase::Codeblock(cb.clone());

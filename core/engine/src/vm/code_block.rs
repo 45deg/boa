@@ -1,3 +1,5 @@
+//! Shared-binding provenance is recorded by `delimited::mark_shared_code` only
+//! after Script scope analysis selected shared storage, including nested functions.
 //! `CodeBlock`
 //!
 //! This module is for the `CodeBlock` which implements a function representation in the VM
@@ -50,6 +52,9 @@ bitflags! {
 
         /// If the function requires a function scope.
         const HAS_FUNCTION_SCOPE = 0b1_0000_0000;
+
+        /// All local bindings were compiled into shared environment storage.
+        const SHARED_CONTINUATION_BINDINGS = 0b10_0000_0000;
 
         /// Trace instruction execution to `stdout`.
         #[cfg(feature = "trace")]

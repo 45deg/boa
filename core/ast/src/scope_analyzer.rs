@@ -4,7 +4,7 @@
 //! 1. Collecting bindings: This step collects all the bindings in the AST and fills the scopes with them.
 //! 2. Analyzing binding escapes: This step analyzes if the bindings escape their function scopes.
 //!
-//! `analyze_shared_binding_escapes` conservatively shares bindings for the VM experiment;
+//! `analyze_shared_binding_escapes` conservatively shares bindings for continuation compilation;
 //! normal analysis leaves register-local allocation enabled.
 
 #[cfg(feature = "annex-b")]
@@ -90,7 +90,7 @@ where
     }
 }
 
-/// Experimental escape pass for scripts that will be captured by multi-shot tests.
+/// Escape pass for scripts compiled for multi-shot continuation capture.
 /// Reuses normal scope traversal and index ordering without introducing eval semantics.
 pub(crate) fn analyze_shared_binding_escapes(
     node: &mut Script,

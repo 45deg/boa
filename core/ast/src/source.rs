@@ -1,5 +1,5 @@
 //! Script/module scope analysis. Normal `analyze_scope` collects and resolves bindings;
-//! the experimental Script escape pass shares local storage before bytecode compilation.
+//! the opt-in Script escape pass shares local storage before bytecode compilation.
 
 use std::ops::ControlFlow;
 
@@ -67,17 +67,17 @@ impl Script {
         Ok(())
     }
 
-    /// Conservatively share local binding storage for continuation experiments.
+    /// Conservatively share local binding storage for delimited continuations.
     ///
     /// Call only on an already scope-analyzed script, before compiling any of its
     /// functions. All local bindings (including const and parameters) are marked
-    /// escaping; no eval code or source-level closure is inserted. This is not a
-    /// Context-wide mode and does not affect separately parsed code.
+    /// escaping; no eval code or source-level closure is inserted. This pass only
+    /// affects this AST; the engine decides which parsing paths opt into it.
     ///
     /// # Errors
     /// Returns any binding analysis error.
     #[doc(hidden)]
-    pub fn share_bindings_for_continuation_experiment(
+    pub fn share_bindings_for_continuations(
         &mut self,
         scope: &Scope,
         interner: &Interner,

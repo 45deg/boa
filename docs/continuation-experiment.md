@@ -6,7 +6,7 @@ Branch: `dev`.
 This is stage 1 of the shift/reset project. The implementation lives in
 `core/engine/src/vm/continuation.rs` and is compiled only with `cfg(test)`.
 This module does not implement public dispatch. The separately implemented
-opt-in one-shot API is described in [delimited-api.md](delimited-api.md).
+opt-in one-shot and multi-shot APIs are described in [delimited-api.md](delimited-api.md).
 
 ## What is implemented
 
@@ -164,7 +164,9 @@ errors. The latter is a compilation check, not support for capturing try/catch.
 The mode applies to a whole selected Script before code generation. Modules,
 separately parsed eval/Function code, already compiled functions, Context-wide
 configuration, performance, and full JavaScript conformance in shared mode are
-not covered. No public multi-shot API is enabled.
+not covered by this historical internal experiment. The subsequent public
+multi-shot integration and its Script compilation restrictions are documented
+in [delimited-api.md](delimited-api.md).
 
 Shared-binding verification (2026-11-09): with default features disabled,
 38 AST, 313 parser, and 1,141 engine library tests passed (one parser test ignored).

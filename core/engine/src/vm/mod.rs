@@ -103,6 +103,7 @@ pub struct Vm {
     pub(crate) host_call_depth: usize,
 
     pub(crate) continuation_owner: Gc<()>,
+    pub(crate) shared_continuation_bindings: bool,
     pub(crate) prompts: Vec<delimited::Prompt>,
 
     pub(crate) shadow_stack: ShadowStack,
@@ -432,6 +433,7 @@ impl Vm {
             native_active_function: None,
             host_call_depth: 0,
             continuation_owner: Gc::new(()),
+            shared_continuation_bindings: false,
             prompts: Vec::new(),
             shadow_stack: ShadowStack::default(),
             #[cfg(feature = "trace")]
@@ -949,6 +951,11 @@ impl Context {
             }
 
             if exit_early {
+                // A callee may have unwound into this host-entry frame. Match
+                // the direct-throw path: discard its values before leaving run().
+                self.vm.frame_mut().environments.truncate(env_fp as usize);
+                let frame = self.vm.frames.last().expect("frame must exist");
+                self.vm.stack.truncate_to_frame(frame);
                 return ControlFlow::Break(CompletionRecord::Throw(
                     self.vm
                         .pending_exception

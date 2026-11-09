@@ -1,4 +1,6 @@
-//! Opt-in one-shot shift/reset using real bytecode call dispatch.
+//! Opt-in one-shot and multi-shot shift/reset using bytecode call dispatch.
+//! Multi-shot clones control state but shares binding cells; Script compilation
+//! records shared-storage provenance checked before multi-shot capture.
 //!
 //! `call` identifies control functions by object data. `capture` moves the suffix
 //! of live frames into a traced segment and dispatches the handler under the same
@@ -7,7 +9,7 @@
 //! or exception sentinel implements these transfers. `Vm::pop_frame` removes a
 //! prompt when its bottom frame returns or unwinds.
 
-use super::{CallFrame, CallFrameFlags, Stack};
+use super::{CallFrame, CallFrameFlags, CodeBlock, CodeBlockFlags, Constant, Stack};
 use crate::{
     Context, JsNativeError, JsObject, JsResult, JsValue,
     builtins::function::OrdinaryFunction,
@@ -27,9 +29,10 @@ use boa_gc::{Finalize, Gc, GcRefCell, Trace};
 pub(crate) struct Prompt {
     pub(crate) frame_index: usize,
     host_depth: usize,
+    multi_shot: bool,
 }
 
-#[derive(Debug, Trace, Finalize)]
+#[derive(Clone, Debug, Trace, Finalize)]
 struct Segment {
     frames: Vec<CallFrame>,
     stack: Stack,
@@ -39,8 +42,12 @@ struct Segment {
 #[derive(Clone, Debug, Trace, Finalize)]
 enum Kind {
     Reset,
+    ResetMultiShot,
     Shift,
-    Resume(Gc<GcRefCell<Option<Segment>>>),
+    Resume {
+        snapshot: Gc<GcRefCell<Option<Segment>>>,
+        multi_shot: bool,
+    },
 }
 
 #[derive(Debug, Trace, Finalize)]
@@ -87,9 +94,9 @@ fn pop_call(argument_count: usize, context: &mut Context) -> Vec<JsValue> {
 
 fn function(kind: Kind, context: &mut Context) -> JsResult<JsObject> {
     let name = match &kind {
-        Kind::Reset => "reset",
+        Kind::Reset | Kind::ResetMultiShot => "reset",
         Kind::Shift => "shift",
-        Kind::Resume(_) => "continuation",
+        Kind::Resume { .. } => "continuation",
     };
     let object = JsObject::from_proto_and_data_with_shared_shape(
         context.root_shape(),
@@ -131,6 +138,30 @@ impl Context {
     /// # Errors
     /// Returns an error if either global name already exists or registration fails.
     pub fn enable_delimited_continuations(&mut self) -> JsResult<()> {
+        self.install_delimited_continuations(false)
+    }
+
+    /// Install experimental multi-shot `reset`/`shift` and enable shared binding
+    /// storage for subsequently parsed Scripts. Each resume copies control state;
+    /// existing binding cells, objects and side effects remain shared. Recursive
+    /// resumption is allowed, subject to the usual VM limits.
+    ///
+    /// Enable before parsing the scripts whose functions will be captured.
+    /// Capture rejects code compiled without shared-binding provenance, including
+    /// older Scripts, modules, eval and Function-constructor code. These compilation
+    /// paths are not yet supported for multi-shot capture. Other one-shot boundary
+    /// restrictions also apply. This does not change previously created continuations.
+    ///
+    /// # Errors
+    /// Returns an error on registration collisions or failure. Failed registration
+    /// does not enable shared compilation.
+    pub fn enable_multishot_delimited_continuations(&mut self) -> JsResult<()> {
+        self.install_delimited_continuations(true)?;
+        self.vm.shared_continuation_bindings = true;
+        Ok(())
+    }
+
+    fn install_delimited_continuations(&mut self, multi_shot: bool) -> JsResult<()> {
         let global = self.global_object();
         for name in [js_string!("reset"), js_string!("shift")] {
             if global.has_own_property(name, self)? {
@@ -140,7 +171,14 @@ impl Context {
         if !global.is_extensible(self)? {
             return Err(error("global object is not extensible"));
         }
-        let reset = function(Kind::Reset, self)?;
+        let reset = function(
+            if multi_shot {
+                Kind::ResetMultiShot
+            } else {
+                Kind::Reset
+            },
+            self,
+        )?;
         let shift = function(Kind::Shift, self)?;
         let attributes = Attribute::WRITABLE | Attribute::CONFIGURABLE;
         self.register_global_property(js_string!("reset"), reset, attributes)?;
@@ -168,9 +206,13 @@ pub(crate) fn call(
         }
         let value = args.first().cloned().unwrap_or_default();
         return match &kind {
-            Kind::Reset => reset(&value, context),
+            Kind::Reset => reset(&value, false, context),
+            Kind::ResetMultiShot => reset(&value, true, context),
             Kind::Shift => capture(&value, context),
-            Kind::Resume(cell) => resume(cell, value, context),
+            Kind::Resume {
+                snapshot,
+                multi_shot,
+            } => resume(snapshot, *multi_shot, value, context),
         };
     }
     let start = context.vm.frames.len();
@@ -210,7 +252,7 @@ fn enter_callback(object: &JsObject, args: &[JsValue], context: &mut Context) ->
     call(object, args.len(), context)
 }
 
-fn reset(value: &JsValue, context: &mut Context) -> JsResult<()> {
+fn reset(value: &JsValue, multi_shot: bool, context: &mut Context) -> JsResult<()> {
     let object = callback(value, context)?;
     context.check_runtime_limits()?;
     let frame_index = context.vm.frames.len();
@@ -218,6 +260,7 @@ fn reset(value: &JsValue, context: &mut Context) -> JsResult<()> {
     context.vm.prompts.push(Prompt {
         frame_index,
         host_depth: context.vm.host_call_depth,
+        multi_shot,
     });
     Ok(())
 }
@@ -233,10 +276,22 @@ fn capture(value: &JsValue, context: &mut Context) -> JsResult<()> {
         return Err(error("shift cannot cross a native callback boundary"));
     }
     let frame_index = prompt.frame_index;
+    let multi_shot = prompt.multi_shot;
     if context.vm.pending_exception.is_some() {
         return Err(error("shift cannot capture a pending exception"));
     }
     for frame in &context.vm.frames[frame_index..] {
+        if multi_shot
+            && !frame
+                .code_block
+                .flags
+                .get()
+                .contains(CodeBlockFlags::SHARED_CONTINUATION_BINDINGS)
+        {
+            return Err(error(
+                "multi-shot capture requires shared-binding compiled frames",
+            ));
+        }
         if !frame
             .flags
             .contains(CallFrameFlags::CONTINUATION_SAFE_ENTRY)
@@ -255,7 +310,13 @@ fn capture(value: &JsValue, context: &mut Context) -> JsResult<()> {
     context.check_runtime_limits()?;
     // Allocate the callable before transferring ownership out of the live VM.
     let cell = Gc::new(GcRefCell::new(None));
-    let continuation = function(Kind::Resume(cell.clone()), context)?;
+    let continuation = function(
+        Kind::Resume {
+            snapshot: cell.clone(),
+            multi_shot,
+        },
+        context,
+    )?;
     let base = context.vm.frames[frame_index].fp;
     let stack = context
         .vm
@@ -283,6 +344,7 @@ fn capture(value: &JsValue, context: &mut Context) -> JsResult<()> {
 
 fn resume(
     cell: &GcRefCell<Option<Segment>>,
+    multi_shot: bool,
     value: JsValue,
     context: &mut Context,
 ) -> JsResult<()> {
@@ -305,8 +367,13 @@ fn resume(
     {
         return Err(error("continuation frame offset overflow"));
     }
-    // None means running OR consumed: recursive invocation fails before user code.
-    let mut segment = state.take().expect("validated continuation");
+    // One-shot is consumed before user code. Multi-shot keeps an immutable
+    // control snapshot; drop the borrow before running a possibly recursive resume.
+    let mut segment = if multi_shot {
+        segment.clone()
+    } else {
+        state.take().expect("validated continuation")
+    };
     drop(state);
     let frame_index = context.vm.frames.len();
     context.vm.stack.stack.append(&mut segment.stack.stack);
@@ -320,9 +387,24 @@ fn resume(
     context.vm.prompts.push(Prompt {
         frame_index,
         host_depth: context.vm.host_call_depth,
+        multi_shot,
     });
     Ok(())
 }
 
+/// Tag the compiled Script tree, never unrelated or dynamically compiled code.
+/// The escape pass ran before compilation; this flag is evidence, not a rewrite.
+pub(crate) fn mark_shared_code(code: &CodeBlock) {
+    code.flags
+        .set(code.flags.get() | CodeBlockFlags::SHARED_CONTINUATION_BINDINGS);
+    for constant in &code.constants {
+        if let Constant::Function(child) = constant {
+            mark_shared_code(child);
+        }
+    }
+}
+
+#[cfg(test)]
+mod multishot_tests;
 #[cfg(test)]
 mod tests;

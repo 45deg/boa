@@ -1,4 +1,5 @@
-//! `--delimited-continuations` opts into the experimental one-shot shift/reset API.
+//! `--delimited-continuations` and `--multishot-continuations` select the
+//! experimental one-shot or shared-binding multi-shot shift/reset API.
 //! A CLI implementation for `boa_engine` that comes complete with file execution and a REPL.
 #![doc = include_str!("../ABOUT.md")]
 #![doc(
@@ -102,6 +103,10 @@ struct Opt {
     /// Enable experimental one-shot shift/reset functions.
     #[arg(long)]
     delimited_continuations: bool,
+
+    /// Enable experimental multi-shot shift/reset and shared Script bindings.
+    #[arg(long, conflicts_with = "delimited_continuations")]
+    multishot_continuations: bool,
 
     /// Dump the AST to stdout with the given format.
     #[arg(
@@ -581,6 +586,11 @@ fn main() -> Result<()> {
         .build()
         .map_err(|e| eyre!(e.to_string()))?;
 
+    if args.multishot_continuations {
+        context
+            .enable_multishot_delimited_continuations()
+            .map_err(|e| eyre!(e.to_string()))?;
+    }
     if args.delimited_continuations {
         context
             .enable_delimited_continuations()
